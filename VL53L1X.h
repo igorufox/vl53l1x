@@ -1,7 +1,28 @@
 #pragma once
 
+// Without Arduino (VL53L1X_NO_ARDUINO, or no Arduino at all): the I2C bus and the clock are the caller's, given with
+// setPlatform() before init(). With Arduino and nothing given: Wire, millis(), delay() and delayMicroseconds() as before
+#if defined(ARDUINO) && !defined(VL53L1X_NO_ARDUINO)
+#define VL53L1X_ARDUINO 1
 #include <Arduino.h>
 #include <Wire.h>
+#else
+#define VL53L1X_ARDUINO 0
+#include <stddef.h>
+#include <stdint.h>
+#endif
+
+// The I2C transfers and the time of the library. write(): the bytes to the device in one transfer with a stop, 0 - ok
+// (else the codes of Wire.endTransmission()). read(): `size` bytes from the device, the number read. millis(): a
+// clock in milliseconds. delay_us(): a busy wait. `context` is given back to every call
+struct VL53L1X_Platform
+{
+  uint8_t (*write)(void * context, uint8_t address, const uint8_t * data, size_t size);
+  size_t (*read)(void * context, uint8_t address, uint8_t * data, size_t size);
+  uint32_t (*millis)(void * context);
+  void (*delay_us)(void * context, uint32_t us);
+  void * context;
+};
 
 class VL53L1X
 {
@@ -1272,8 +1293,14 @@ class VL53L1X
 
     VL53L1X();
 
+#if VL53L1X_ARDUINO
     void setBus(TwoWire * bus) { this->bus = bus; }
     TwoWire * getBus() { return bus; }
+#endif
+
+    // the bus and the clock of the caller (kept as a pointer: it must outlive the object)
+    void setPlatform(const VL53L1X_Platform * platform) { this->platform = platform; }
+    const VL53L1X_Platform * getPlatform() { return platform; }
 
     void setAddress(uint8_t new_addr);
     uint8_t getAddress() { return address; }
@@ -1358,7 +1385,10 @@ class VL53L1X
     // I2C buses)
     ResultBuffer results;
 
+#if VL53L1X_ARDUINO
     TwoWire * bus;
+#endif
+    const VL53L1X_Platform * platform;
 
     uint8_t address;
 
@@ -1376,10 +1406,16 @@ class VL53L1X
     DistanceMode distance_mode;
 
     // Record the current time to check an upcoming timeout against
-    void startTimeout() { timeout_start_ms = millis(); }
+    void startTimeout() { timeout_start_ms = (uint16_t)nowMillis(); }
 
     // Check if timeout is enabled (set to nonzero value) and has expired
-    bool checkTimeoutExpired() {return (io_timeout > 0) && ((uint16_t)(millis() - timeout_start_ms) > io_timeout); }
+    bool checkTimeoutExpired() {return (io_timeout > 0) && ((uint16_t)(nowMillis() - timeout_start_ms) > io_timeout); }
+
+    // the platform's calls, or Arduino's when none was given
+    uint32_t nowMillis();
+    void waitMicroseconds(uint32_t us);
+    uint8_t busWrite(const uint8_t * data, size_t size);
+    size_t busRead(uint8_t * data, size_t size);
 
     void setupManualCalibration();
     void readResults();

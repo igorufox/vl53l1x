@@ -1,6 +1,29 @@
 # VL53L1X library for Arduino
 [www.pololu.com](https://www.pololu.com/)
 
+## This fork (igorufox/vl53l1x, branch `espurna`)
+
+Pololu's library 1.3.1 where the I&sup2;C bus and the clock can be given by the caller, so it builds and runs
+without Arduino (ESP-IDF, the ESP8266 RTOS SDK, the Beken SDK ...). Define `VL53L1X_NO_ARDUINO` (or build without
+Arduino at all) and hand the object a platform before `init()`:
+
+```cpp
+static const VL53L1X_Platform platform {
+    my_i2c_write,   // uint8_t (void* context, uint8_t address, const uint8_t* data, size_t size): 0 - ok
+    my_i2c_read,    // size_t (void* context, uint8_t address, uint8_t* data, size_t size): bytes read
+    my_millis,      // uint32_t (void* context)
+    my_delay_us,    // void (void* context, uint32_t us)
+    nullptr,        // context, given back to every call
+};
+
+VL53L1X sensor;
+sensor.setPlatform(&platform);
+sensor.init();
+```
+
+With Arduino and no platform given it is the original library: `Wire`, `millis()`, `delay()`. The CI of the fork
+compiles the library without Arduino (host GCC, ARM GCC) and runs `init()` and a reading against a fake bus.
+
 ## Summary
 
 This is a library for the Arduino IDE that helps interface with ST's [VL53L1X time-of-flight distance sensor](https://www.pololu.com/product/3415). The library makes it simple to configure the sensor and read range data from it via I&sup2;C.

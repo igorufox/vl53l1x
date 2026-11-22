@@ -1,0 +1,99 @@
+name: Build
+
+# The library alone, without Arduino (VL53L1X_NO_ARDUINO): compiled by the host GCC and by the ARM GCC (the BK7231N
+# of ESPurna), then a host test drives init() and a single reading through a fake bus given with setPlatform()
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: host
+            cxx: g++
+            flags: ""
+            test: true
+          - name: arm968e-s
+            cxx: arm-none-eabi-g++
+            flags: "-mcpu=arm968e-s -mthumb"
+            test: false
+    name: ${{ matrix.name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ARM GCC
+        if: matrix.cxx == 'arm-none-eabi-g++'
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/arm.tar.xz" \
+            "https://developer.arm.com/-/media/Files/downloads/gnu/14.2.rel1/binrel/arm-gnu-toolchain-14.2.rel1-x86_64-arm-none-eabi.tar.xz"
+          mkdir -p "$RUNNER_TEMP/arm"
+          tar -xJf "$RUNNER_TEMP/arm.tar.xz" -C "$RUNNER_TEMP/arm" --strip-components=1
+          echo "$RUNNER_TEMP/arm/bin" >> "$GITHUB_PATH"
+
+      - name: Compile
+        run: |
+          set -e
+          ${{ matrix.cxx }} --version | head -1
+          mkdir -p out
+          ${{ matrix.cxx }} -std=gnu++17 -Wall -Wextra -DVL53L1X_NO_ARDUINO -I. ${{ matrix.flags }} \
+            -c VL53L1X.cpp -o out/VL53L1X.o
+
+      - name: Test with a fake bus
+        if: matrix.test
+        run: |
+          set -e
+          cat > out/test.cpp <<'EOF'
+          #include <VL53L1X.h>
+          #include <cstdio>
+          #include <cstring>
+
+          // a register file of 64 KiB: the model id, the boot bit and a measurement of 1234 mm ready
+          static uint8_t regs[65536];
+          static uint16_t pointer;
+          static uint32_t now;
+
+          static uint8_t fake_write(void*, uint8_t address, const uint8_t* data, size_t size) {
+              if (address != 0x29 || size < 2) return 2;
+              pointer = (uint16_t)(data[0] << 8 | data[1]);
+              for (size_t i = 2; i < size; i++) regs[(uint16_t)(pointer + i - 2)] = data[i];
+              return 0;
+          }
+
+          static size_t fake_read(void*, uint8_t address, uint8_t* data, size_t size) {
+              if (address != 0x29) return 0;
+              for (size_t i = 0; i < size; i++) data[i] = regs[(uint16_t)(pointer + i)];
+              return size;
+          }
+
+          static uint32_t fake_millis(void*) { return now += 1; }
+          static void fake_delay(void*, uint32_t us) { now += us / 1000; }
+
+          int main() {
+              regs[VL53L1X::IDENTIFICATION__MODEL_ID] = 0xEA;
+              regs[VL53L1X::IDENTIFICATION__MODEL_ID + 1] = 0xCC;
+              regs[VL53L1X::FIRMWARE__SYSTEM_STATUS] = 0x01;
+
+              static const VL53L1X_Platform platform { fake_write, fake_read, fake_millis, fake_delay, nullptr };
+              VL53L1X sensor;
+              sensor.setPlatform(&platform);
+              sensor.setTimeout(500);
+              if (!sensor.init()) { std::puts("init failed"); return 1; }
+
+              // a reading: data ready (GPIO__TIO_HV_STATUS bit 0 low with active-high interrupt), range 1234 mm
+              regs[VL53L1X::GPIO__TIO_HV_STATUS] = 0x00;
+              regs[VL53L1X::RESULT__RANGE_STATUS] = 9;
+              regs[VL53L1X::RESULT__RANGE_STATUS + 13] = 1234 >> 8;
+              regs[VL53L1X::RESULT__RANGE_STATUS + 14] = 1234 & 0xff;
+              const uint16_t mm = sensor.read(false);
+              std::printf("init ok, read %u mm, status %s\n", mm, VL53L1X::rangeStatusToString(sensor.ranging_data.range_status));
+              return (mm > 0) ? 0 : 1;
+          }
+          EOF
+          g++ -std=gnu++17 -Wall -DVL53L1X_NO_ARDUINO -I. out/test.cpp out/VL53L1X.o -o out/test
+          ./out/test

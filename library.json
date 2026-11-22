@@ -1,0 +1,23 @@
+{
+  "name": "VL53L1X",
+  "description": "Pololu's VL53L1X library (ST VL53L1X time-of-flight distance sensor) where the I2C bus and the clock can be given by the caller (setPlatform(): write / read / millis / delay_us callbacks): no Arduino needed (VL53L1X_NO_ARDUINO). With Arduino and nothing given it is Pololu's library as it was: Wire, millis(), delay().",
+  "keywords": "vl53l1x, tof, distance, sensor, i2c",
+  "authors": [
+    {
+      "name": "Pololu",
+      "url": "https://www.pololu.com"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/igorufox/vl53l1x"
+  },
+  "version": "1.3.1-espurna.1",
+  "license": "BSD-3-Clause",
+  "frameworks": "*",
+  "platforms": "*",
+  "headers": "VL53L1X.h",
+  "build": {
+    "srcFilter": "+<*.cpp> -<examples/>"
+  }
+}

@@ -8,11 +8,16 @@
 // Constructors ////////////////////////////////////////////////////////////////
 
 VL53L1X::VL53L1X()
+#if VL53L1X_ARDUINO
 #if !defined(NO_GLOBAL_INSTANCES) && !defined(NO_GLOBAL_TWOWIRE)
-  : bus(&Wire)
+  : bus(&Wire),
 #else
-  : bus(nullptr)
+  : bus(nullptr),
 #endif
+#else
+  :
+#endif
+  platform(nullptr)
   , address(AddressDefault)
   , io_timeout(0) // no timeout
   , did_timeout(false)
@@ -43,12 +48,12 @@ bool VL53L1X::init(bool io_2v8)
   // VL53L1_software_reset() begin
 
   writeReg(SOFT_RESET, 0x00);
-  delayMicroseconds(100);
+  waitMicroseconds(100);
   writeReg(SOFT_RESET, 0x01);
 
   // give it some time to boot; otherwise the sensor NACKs during the readReg()
   // call below and the Arduino 101 doesn't seem to handle that well
-  delay(1);
+  waitMicroseconds(1000);
 
   // VL53L1_poll_for_boot_completion() begin
 
@@ -158,90 +163,105 @@ bool VL53L1X::init(bool io_2v8)
   return true;
 }
 
+// The platform: the caller's (setPlatform()), or Arduino's Wire and clock
+
+uint32_t VL53L1X::nowMillis()
+{
+  if (platform) { return platform->millis(platform->context); }
+#if VL53L1X_ARDUINO
+  return millis();
+#else
+  return 0;
+#endif
+}
+
+void VL53L1X::waitMicroseconds(uint32_t us)
+{
+  if (platform) { platform->delay_us(platform->context, us); return; }
+#if VL53L1X_ARDUINO
+  if (us >= 1000) { delay(us / 1000); us %= 1000; }
+  delayMicroseconds(us);
+#endif
+}
+
+uint8_t VL53L1X::busWrite(const uint8_t * data, size_t size)
+{
+  if (platform) { return platform->write(platform->context, address, data, size); }
+#if VL53L1X_ARDUINO
+  bus->beginTransmission(address);
+  for (size_t i = 0; i < size; i++) { bus->write(data[i]); }
+  return bus->endTransmission();
+#else
+  return 4;
+#endif
+}
+
+size_t VL53L1X::busRead(uint8_t * data, size_t size)
+{
+  if (platform) { return platform->read(platform->context, address, data, size); }
+#if VL53L1X_ARDUINO
+  size_t got = bus->requestFrom(address, (uint8_t)size);
+  for (size_t i = 0; i < got; i++) { data[i] = bus->read(); }
+  return got;
+#else
+  return 0;
+#endif
+}
+
 // Write an 8-bit register
 void VL53L1X::writeReg(uint16_t reg, uint8_t value)
 {
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  bus->write(value);
-  last_status = bus->endTransmission();
+  const uint8_t data[] = { (uint8_t)(reg >> 8), (uint8_t)(reg), value };
+  last_status = busWrite(data, sizeof(data));
 }
 
 // Write a 16-bit register
 void VL53L1X::writeReg16Bit(uint16_t reg, uint16_t value)
 {
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  bus->write((uint8_t)(value >> 8)); // value high byte
-  bus->write((uint8_t)(value));      // value low byte
-  last_status = bus->endTransmission();
+  const uint8_t data[] = { (uint8_t)(reg >> 8), (uint8_t)(reg),
+    (uint8_t)(value >> 8), (uint8_t)(value) };
+  last_status = busWrite(data, sizeof(data));
 }
 
 // Write a 32-bit register
 void VL53L1X::writeReg32Bit(uint16_t reg, uint32_t value)
 {
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  bus->write((uint8_t)(value >> 24)); // value highest byte
-  bus->write((uint8_t)(value >> 16));
-  bus->write((uint8_t)(value >>  8));
-  bus->write((uint8_t)(value));       // value lowest byte
-  last_status = bus->endTransmission();
+  const uint8_t data[] = { (uint8_t)(reg >> 8), (uint8_t)(reg),
+    (uint8_t)(value >> 24), (uint8_t)(value >> 16), (uint8_t)(value >> 8), (uint8_t)(value) };
+  last_status = busWrite(data, sizeof(data));
 }
 
 // Read an 8-bit register
 uint8_t VL53L1X::readReg(regAddr reg)
 {
-  uint8_t value;
+  const uint8_t address_bytes[] = { (uint8_t)(reg >> 8), (uint8_t)(reg) };
+  last_status = busWrite(address_bytes, sizeof(address_bytes));
 
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  last_status = bus->endTransmission();
-
-  bus->requestFrom(address, (uint8_t)1);
-  value = bus->read();
-
-  return value;
+  uint8_t value[1] = { 0 };
+  busRead(value, sizeof(value));
+  return value[0];
 }
 
 // Read a 16-bit register
 uint16_t VL53L1X::readReg16Bit(uint16_t reg)
 {
-  uint16_t value;
+  const uint8_t address_bytes[] = { (uint8_t)(reg >> 8), (uint8_t)(reg) };
+  last_status = busWrite(address_bytes, sizeof(address_bytes));
 
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  last_status = bus->endTransmission();
-
-  bus->requestFrom(address, (uint8_t)2);
-  value  = (uint16_t)bus->read() << 8; // value high byte
-  value |=           bus->read();      // value low byte
-
-  return value;
+  uint8_t value[2] = { 0, 0 };
+  busRead(value, sizeof(value));
+  return (uint16_t)((uint16_t)value[0] << 8 | value[1]);
 }
 
 // Read a 32-bit register
 uint32_t VL53L1X::readReg32Bit(uint16_t reg)
 {
-  uint32_t value;
+  const uint8_t address_bytes[] = { (uint8_t)(reg >> 8), (uint8_t)(reg) };
+  last_status = busWrite(address_bytes, sizeof(address_bytes));
 
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(reg >> 8)); // reg high byte
-  bus->write((uint8_t)(reg));      // reg low byte
-  last_status = bus->endTransmission();
-
-  bus->requestFrom(address, (uint8_t)4);
-  value  = (uint32_t)bus->read() << 24; // value highest byte
-  value |= (uint32_t)bus->read() << 16;
-  value |= (uint16_t)bus->read() <<  8;
-  value |=           bus->read();       // value lowest byte
-
-  return value;
+  uint8_t value[4] = { 0, 0, 0, 0 };
+  busRead(value, sizeof(value));
+  return (uint32_t)value[0] << 24 | (uint32_t)value[1] << 16 | (uint32_t)value[2] << 8 | value[3];
 }
 
 // set distance mode to Short, Medium, or Long
@@ -666,39 +686,29 @@ void VL53L1X::setupManualCalibration()
 // read measurement results into buffer
 void VL53L1X::readResults()
 {
-  bus->beginTransmission(address);
-  bus->write((uint8_t)(RESULT__RANGE_STATUS >> 8)); // reg high byte
-  bus->write((uint8_t)(RESULT__RANGE_STATUS));      // reg low byte
-  last_status = bus->endTransmission();
+  const uint8_t address_bytes[] = { (uint8_t)(RESULT__RANGE_STATUS >> 8), (uint8_t)(RESULT__RANGE_STATUS) };
+  last_status = busWrite(address_bytes, sizeof(address_bytes));
 
-  bus->requestFrom(address, (uint8_t)17);
+  uint8_t data[17] = { 0 };
+  busRead(data, sizeof(data));
 
-  results.range_status = bus->read();
+  results.range_status = data[0];
 
-  bus->read(); // report_status: not used
+  // data[1] report_status: not used
 
-  results.stream_count = bus->read();
+  results.stream_count = data[2];
 
-  results.dss_actual_effective_spads_sd0  = (uint16_t)bus->read() << 8; // high byte
-  results.dss_actual_effective_spads_sd0 |=           bus->read();      // low byte
+  results.dss_actual_effective_spads_sd0 = (uint16_t)data[3] << 8 | data[4];
 
-  bus->read(); // peak_signal_count_rate_mcps_sd0: not used
-  bus->read();
+  // data[5..6] peak_signal_count_rate_mcps_sd0: not used
 
-  results.ambient_count_rate_mcps_sd0  = (uint16_t)bus->read() << 8; // high byte
-  results.ambient_count_rate_mcps_sd0 |=           bus->read();      // low byte
+  results.ambient_count_rate_mcps_sd0 = (uint16_t)data[7] << 8 | data[8];
 
-  bus->read(); // sigma_sd0: not used
-  bus->read();
+  // data[9..10] sigma_sd0, data[11..12] phase_sd0: not used
 
-  bus->read(); // phase_sd0: not used
-  bus->read();
+  results.final_crosstalk_corrected_range_mm_sd0 = (uint16_t)data[13] << 8 | data[14];
 
-  results.final_crosstalk_corrected_range_mm_sd0  = (uint16_t)bus->read() << 8; // high byte
-  results.final_crosstalk_corrected_range_mm_sd0 |=           bus->read();      // low byte
-
-  results.peak_signal_count_rate_crosstalk_corrected_mcps_sd0  = (uint16_t)bus->read() << 8; // high byte
-  results.peak_signal_count_rate_crosstalk_corrected_mcps_sd0 |=           bus->read();      // low byte
+  results.peak_signal_count_rate_crosstalk_corrected_mcps_sd0 = (uint16_t)data[15] << 8 | data[16];
 }
 
 // perform Dynamic SPAD Selection calculation/update
