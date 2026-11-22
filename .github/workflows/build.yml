@@ -8,7 +8,31 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
+  # the release of the version in library.json: on a green push to the espurna branch, the tag and the release made
+  # here when they do not exist yet (a new release = a version bump commit), nobody tags by hand
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/espurna'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          version=$(python3 -c "import json; print(json.load(open('library.json'))['version'])")
+          if gh release view "$version" >/dev/null 2>&1; then
+            echo "release $version exists"
+          else
+            gh release create "$version" --target "$GITHUB_SHA" --title "$version" \
+              --notes "VL53L1X library (Pololu 1.3.1), the I2C bus and the clock given by the caller (setPlatform)"
+          fi
+
   build:
     runs-on: ubuntu-24.04
     strategy:
@@ -78,6 +102,11 @@ jobs:
               regs[VL53L1X::IDENTIFICATION__MODEL_ID] = 0xEA;
               regs[VL53L1X::IDENTIFICATION__MODEL_ID + 1] = 0xCC;
               regs[VL53L1X::FIRMWARE__SYSTEM_STATUS] = 0x01;
+              // the fast oscillator (~ 0xC000 on a real part, the library divides by it) and its calibration
+              regs[VL53L1X::OSC_MEASURED__FAST_OSC__FREQUENCY] = 0xC0;
+              regs[VL53L1X::OSC_MEASURED__FAST_OSC__FREQUENCY + 1] = 0x00;
+              regs[VL53L1X::RESULT__OSC_CALIBRATE_VAL] = 0x00;
+              regs[VL53L1X::RESULT__OSC_CALIBRATE_VAL + 1] = 0x10;
 
               static const VL53L1X_Platform platform { fake_write, fake_read, fake_millis, fake_delay, nullptr };
               VL53L1X sensor;
